@@ -292,16 +292,17 @@ CONCURRENT_REQUESTS = 10  # Limit the number of parallel requests
 # Async function to get LLM response
 '''Async function to get chat completion from the LLM API. Takes in a session, semaphore, model ID, system instruction, and user instruction.
 Returns the content of the first choice in the response.'''
-async def get_chat_completion(session, sem, model: str, system_instruction: str, user_instruction: str) -> str:
+async def get_chat_completion(session, sem, model: str, system_instruction: str, user_instruction: str,
+                              temperature,max_token) -> str:
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_instruction},
             {"role": "user", "content": user_instruction}
         ],
-        "temperature": 0.0,
+        "temperature": temperature,
         "stream": False,
-        "max_tokens": 2000
+        "max_tokens": max_token
     }
 
     async with sem:
@@ -313,11 +314,11 @@ async def get_chat_completion(session, sem, model: str, system_instruction: str,
 ''' A function that runs a batch of prompts concurrently using asyncio and aiohttp.
 It takes a model ID, system instruction, and a list of prompts, and returns the results.
 It uses a semaphore to limit the number of concurrent requests.'''
-async def run_batch(model: str, system_instruction: str, prompts: List[str]):
+async def run_batch(model: str, system_instruction: str, prompts: List[str],temperature,max_token) -> List[str]:
     sem = asyncio.Semaphore(CONCURRENT_REQUESTS)
     async with aiohttp.ClientSession() as session:
         tasks = [
-            get_chat_completion(session, sem, model, system_instruction, prompt)
+            get_chat_completion(session, sem, model, system_instruction, prompt,temperature,max_token)
             for prompt in prompts
         ]
 
@@ -360,7 +361,9 @@ async def run_models_with_output(
     include_relevant_entities=True,
     sample=10,
     full_df=False,
-    prompt="Calculate PERC score for this patient."
+    prompt="Calculate PERC score for this patient.",
+    temperature=0.0,
+    max_tokens=1000
 ):
     results = []
     wrong_outputs = []
@@ -390,7 +393,9 @@ async def run_models_with_output(
         results_async = await run_batch(
             model=model_id,
             system_instruction=sys_instruct,
-            prompts=prompts
+            prompts=prompts,
+            temperature=temperature,
+            max_token=max_tokens
         )
 
         for i, reply in enumerate(results_async):
