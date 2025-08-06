@@ -14,7 +14,7 @@ from typing import List
 import seaborn as sns
 import builtins 
 from jinja2 import Environment, DictLoader
-
+from typing import List, Tuple
 # Load dataset
 dataset = load_dataset("ncbi/MedCalc-Bench-v1.0")
 df = dataset["train"].to_pandas()  # or "test"
@@ -137,8 +137,7 @@ model_ids = [
 ]
 #Models that I will be using
 model_ids = [
-    "Llama-3.3-70B-Instruct",#
-    "Llama3-Med42-70B",#
+    "Llama-3.3-70B-Instruct",
     "Med42-Qwen2.5-72B-v3-bi"
 ]
 
@@ -146,16 +145,27 @@ model_ids = [
 # %% [markdown]
 # ### Function to run models with different prompts among other params and plot the data
 
-# %%
-'''extracts a JSON object from a text string. Assues only one JSON object is present in the text.'''
+
 def extract_json_from_text(text: str):
+    '''Extracts a JSON object from a text string. Assumes only one JSON object is present in the text.'''
     try:
         start = text.index('{')
         end = text.rindex('}') + 1
         json_str = text[start:end]
-        return json.loads(json_str)
+        parsed = json.loads(json_str)
+        
+        # Ensure "Answer" field is an integer if present
+        if "Answer" in parsed:
+            try:
+                parsed["Answer"] = int(float(parsed["Answer"]))
+            except (ValueError, TypeError):
+                # If conversion fails, you could set to None or raise an error
+                parsed["Answer"] = None
+        
+        return parsed
     except (ValueError, json.JSONDecodeError):
         return None
+
     
 
 
@@ -246,31 +256,40 @@ def plot_df(results_df):
 
 '''Plots a pie chart for each model showing the distribution of correct, wrong, and invalid answers.'''
 def plot_df_pie(results_df):
-    num_models = len(results_df)
+    # Get unique models
+    model_ids = results_df["model_id"].unique()
+    n_models = len(model_ids)
+
     ncols = 2
-    nrows = (num_models + 1) // ncols
+    nrows = (n_models + 1) // ncols
 
     fig, axes = plt.subplots(nrows, ncols, figsize=(12, 5 * nrows))
     axes = axes.flatten()
 
-    for i, row in results_df.iterrows():
-        # Prepare label, value, color triplets
-        all_labels = ['Correct', 'Incorrect', 'Invalid']
-        all_counts = [row['correct'], row['wrong'], row['invalid']]
-        all_colors = ['mediumseagreen', 'tomato', 'slategray']
+    for i, model_id in enumerate(model_ids):
+        model_df = results_df[results_df["model_id"] == model_id]
 
-        # Filter out zero-counts
-        filtered = [(label, count, color) for label, count, color in zip(all_labels, all_counts, all_colors) if count > 0]
-        if not filtered:
-            continue  # skip completely empty pie
+        counts = model_df["type"].value_counts()
+        labels = []
+        values = []
+        colors = []
 
-        labels, counts, colors = zip(*filtered)
+        for label, color in zip(["correct", "wrong", "invalid"],
+                                ['mediumseagreen', 'tomato', 'slategray']):
+            if label in counts:
+                labels.append(label.capitalize())
+                values.append(counts[label])
+                colors.append(color)
+
+        if not values:
+            continue  # Skip model if no data
 
         ax = axes[i]
-        ax.pie(counts, labels=labels, autopct='%1.1f%%', colors=colors, startangle=140)
-        ax.set_title(f"Model: {row['model_id']}")
+        ax.pie(values, labels=labels, autopct='%1.1f%%',
+               colors=colors, startangle=140)
+        ax.set_title(f"Model: {model_id}")
 
-    # Hide unused subplots
+    # Hide unused axes
     for j in range(i + 1, len(axes)):
         axes[j].axis('off')
 
@@ -294,6 +313,7 @@ CONCURRENT_REQUESTS = 10  # Limit the number of parallel requests
 Returns the content of the first choice in the response.'''
 async def get_chat_completion(session, sem, model: str, system_instruction: str, user_instruction: str,
                               temperature,max_token) -> str:
+    
     payload = {
         "model": model,
         "messages": [
@@ -304,7 +324,7 @@ async def get_chat_completion(session, sem, model: str, system_instruction: str,
         "stream": False,
         "max_tokens": max_token
     }
-
+    
     async with sem:
         async with session.post(BASE_URL, headers=HEADERS, json=payload) as response:
             response.raise_for_status()
@@ -365,18 +385,12 @@ async def run_models_with_output(
     temperature=0.0,
     max_tokens=1000
 ):
-    results = []
-    wrong_outputs = []
-    invalid_outputs = []
-    parsed_results_per_model = {model_id: [] for model_id in model_ids}
-
-    subset_df = perc_df.head(sample)
-    iterate_df = perc_df if full_df else subset_df
+    results_data = []
+    subset_df = perc_df.head(sample).reset_index(drop=True)
+    iterate_df = perc_df.reset_index(drop=True) if full_df else subset_df
 
     for model_id in model_ids:
         print(f"\n=== Evaluating model: {model_id} ===\n")
-        wrong = invalid = correct = 0
-        total = len(iterate_df)
         prompts = []
 
         for idx, row in iterate_df.iterrows():
@@ -407,152 +421,156 @@ async def run_models_with_output(
             ground_truth = row["Ground Truth Answer"]
 
             parsed = extract_json_from_text(reply)
-            if parsed is None or "Answer" not in parsed:
-                # parsed = extract_score_from_text(reply) 
-                if parsed is None or "Answer" not in parsed:
-                    invalid += 1
-                    invalid_outputs.append({
-                        "model": model_id,
-                        "note": row["Patient Note"],
-                        "entities": entities if include_relevant_entities else None,
-                        "reply": reply,
-                        "reason": "Invalid JSON or missing 'Answer'"
-                    })
-                    parsed_results_per_model[model_id].append({
-                        "note": row["Patient Note"],
-                        "entities": entities if include_relevant_entities else None,
-                        "ground_truth": ground_truth,
-                        "parsed_criteria": None,
-                        "predicted": None,
-                        "raw_reply": reply,
-                        "valid": False,
-                        "correct": False
-                    })
-                    continue
+            entry_type = "invalid"
+            criteria = None
+            predicted_score = None
+            valid = False
+            correct_flag = False
 
-            predicted_score = parsed.get("Answer")
+            if parsed is not None and "Answer" in parsed:
+                try:
+                    parsed["Answer"] = int(float(parsed["Answer"]))
+                except Exception as e:
+                    print(f"Failed to convert Answer to int: {parsed['Answer']}, error: {e}")
+                    parsed["Answer"] = None
 
-            # Extract all criteria booleans except the 'Answer'
-            criteria = {k: v for k, v in parsed.items() if k != "Answer"}
+                answer = parsed.get("Answer")
+                if answer is not None:
+                    predicted_score = answer
+                    criteria = {k: v for k, v in parsed.items() if k != "Answer"}
+                    valid = True
+                    if predicted_score == int(ground_truth):
+                        entry_type = "correct"
+                        correct_flag = True
+                    else:
+                        entry_type = "wrong"
 
-            if predicted_score == ground_truth:
-                correct += 1
-            else:
-                wrong += 1
-                wrong_outputs.append({
-                    "model": model_id,
-                    "note": row["Patient Note"],
-                    "entities": entities if include_relevant_entities else None,
-                    "reply": reply,
-                    "expected": ground_truth,
-                    "predicted": predicted_score
-                })
-
-            parsed_results_per_model[model_id].append({
+            results_data.append({
+                "model_id": model_id,
                 "note": row["Patient Note"],
-                "entities": entities if include_relevant_entities else None,
+                "entities": entities,
                 "ground_truth": ground_truth,
-                "parsed_criteria": criteria,
                 "predicted": predicted_score,
-                "raw_reply": reply,
-                "valid": True,
-                "correct": predicted_score == ground_truth
+                "parsed_criteria": criteria,
+                # "prompt": prompt_text,
+                "reply": reply,
+                "type": entry_type,
+                "valid": valid,
+                "correct": correct_flag,
+                # "row_number": row_number  # optionally include this for traceability
             })
 
-        valid = correct + wrong
-        accuracy = correct / valid if valid > 0 else 0
-
-        results.append({
-            "model_id": model_id,
-            "wrong": wrong,
-            "correct": correct,
-            "invalid": invalid,
-            "total": total,
-            "accuracy": round(accuracy, 3)
-        })
 
         print("\nDone ✅")
 
-    results_df = pd.DataFrame(results)
-    print("\n=== Summary Table ===")
-    print(results_df)
+    results_df = pd.DataFrame(results_data)
 
-    return invalid_outputs, wrong_outputs, results_df, parsed_results_per_model
+    # Optional summary print
+    print("\n=== Summary Counts ===")
+    print(results_df["type"].value_counts())
+
+    return results_df
 
 
 # %% [markdown]
 # #### Troubleshooting wrong/invalid replies
+def print_troubleshooting_outputs(results_df):
+    """
+    Prints detailed troubleshooting info for wrong and invalid responses 
+    based on the 'type' field in the results DataFrame.
+    
+    Args:
+        results_df (pd.DataFrame): DataFrame with model outputs. Must include:
+            ['model_id', 'note', 'entities', 'ground_truth', 'predicted', 
+             'parsed_criteria', 'prompt', 'reply', 'type', 'valid', 'correct']
+    """
+    wrong_df = results_df[results_df['type'] == 'wrong']
+    invalid_df = results_df[results_df['type'] == 'invalid']
 
-# %%
-def print_outputs(wrong_outputs,invalid_outputs):
-    for i, entry in enumerate(wrong_outputs):
-        print(f"\n--- Wrong Reply {i+1} ---")
-        print(f"Expected: {entry['expected']} | Predicted: {entry['predicted']}")
-        print(f"Reply:\n{entry['reply']}")
+    print(f"\n===== INCORRECT OUTPUTS ({len(wrong_df)}) =====")
+    for i, row in wrong_df.iterrows():
+        print(f"\n--- Wrong Reply {i + 1} ---")
+        print(f"Model: {row['model_id']}")
+        print(f"Expected: {row['ground_truth']} | Predicted: {row['predicted']}")
+        print(f"Patient Note:\n{row['note']}")
+        print(f"Entities:\n{row['entities']}")
+        print(f"Parsed Criteria:\n{row['parsed_criteria']}")
+        print(f"Prompt:\n{row['prompt']}")
+        print(f"Reply:\n{row['reply']}")
 
-    # Extract invalid replies with metadata
-    for i, entry in enumerate(invalid_outputs):
-        print(f"\n--- Invalid Reply {i+1} ---")
-        print(f"Expected: {entry['expected']} | Predicted: {entry['predicted']}")
-        print(f"Reply:\n{entry['reply']}")
+    print(f"\n===== INVALID OUTPUTS ({len(invalid_df)}) =====")
+    for i, row in invalid_df.iterrows():
+        print(f"\n--- Invalid Reply {i + 1} ---")
+        print(f"Model: {row['model_id']}")
+        print(f"Expected: {row['ground_truth']}")
+        print(f"Patient Note:\n{row['note']}")
+        print(f"Entities:\n{row['entities']}")
+        print(f"Prompt:\n{row['prompt']}")
+        print(f"Reply:\n{row['reply']}")
 
+    # Just raw replies from invalid if needed
+    invalid_replies = invalid_df['reply'].tolist()
+    for i, reply in enumerate(invalid_replies):
+        print(f"\n--- Invalid Reply (Raw Only) {i + 1} ---\n{reply}")
 
-
-# %% [markdown]
-# ### Accuracy (Used the data from "More detailed system instruction (does not include relevant entities in prompt)")
-
-# %% [markdown]
-# #### Outputs and Ground truth answer
-
-# %%
-''' A function that computes the truth table for the PERC criteria based on parsed JSON outputs and patient data.
-It returns a DataFrame with accuracy for each criterion per model.'''
-def compute_truth_table(parsed_json, patient_df):
-    rows = []
-
+def compute_truth_table(results_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compare predicted PERC criteria to ground truth derived from parsed patient entities.
+    Returns a DataFrame showing criterion-level accuracy per model.
+    """
     def to_bool(val):
         if isinstance(val, bool):
             return val
         if isinstance(val, str):
-            return val.lower() in ['true', 'yes', '1']
+            return val.strip().lower() in ['true', 'yes', '1']
         return bool(val)
 
-    for model_id, outputs in parsed_json.items():
-        for i, output in enumerate(outputs):
-            try:
-                criteria_pred = output["parsed_criteria"]["Criteria"]
-            except (TypeError, KeyError):
-                continue  # skip bad or invalid outputs
+    rows = []
 
-            row = patient_df.iloc[i]
-            entities = row["Parsed Entities"]
+    for _, row in results_df.iterrows():
+        model_id = row["model_id"]
+        criteria_pred = None
 
-            age = extract_number(entities.get("age"))
-            hr = extract_number(entities.get("Heart Rate or Pulse"))
-            o2 = extract_number(entities.get("O₂ saturation percentage"))
+        try:
+            criteria_pred = row["parsed_criteria"]["Criteria"]
+        except (TypeError, KeyError):
+            continue  # skip invalid rows
 
-            truth = {
-                "Age < 50": age is not None and age < 50,
-                "HR < 100": hr is not None and hr < 100,
-                "O₂ ≥ 95%": o2 is not None and o2 >= 95,
-                "No hemoptysis": not to_bool(entities.get("Hemoptysis", False)),
-                "No estrogen use": not to_bool(entities.get("Estrogen use", False)),
-                "No prior VTE": not to_bool(entities.get("Prior VTE", False)),
-                "No unilateral leg swelling": not to_bool(entities.get("Unilateral leg swelling", False)),
-            }
+        entities = row["entities"]
 
-            for criterion, true_val in truth.items():
-                pred_val = criteria_pred.get(criterion)
-                match = (pred_val == true_val)
-                rows.append({
-                    "Model": model_id,
-                    "Criterion": criterion,
-                    "Correct": match
-                })
+        # Extract numbers safely
+        age = extract_number(entities.get("age"))
+        hr = extract_number(entities.get("Heart Rate or Pulse"))
+        o2 = extract_number(entities.get("O₂ saturation percentage"))
+
+        # Construct truth based on entities
+        truth = {
+            "Age < 50": age is not None and age < 50,
+            "HR < 100": hr is not None and hr < 100,
+            "O₂ ≥ 95%": o2 is not None and o2 >= 95,
+            "No hemoptysis": not to_bool(entities.get("Hemoptysis", False)),
+            "No Hormone use": not to_bool(entities.get("Hormone use", False)),
+            "No prior VTE or DVT": not (
+                to_bool(entities.get("Previously documented Deep Vein Thrombosis", False)) or
+                to_bool(entities.get("Previously Documented Pulmonary Embolism", False))
+            ),
+            "No unilateral leg swelling": not to_bool(entities.get("Unilateral Leg Swelling", False)),
+            "No recent trauma or surgery": not to_bool(entities.get("Recent surgery or trauma", False)),
+        }
+
+        for criterion, true_val in truth.items():
+            pred_val = criteria_pred.get(criterion)
+            if pred_val is None:
+                continue  # Missing prediction
+            match = (to_bool(pred_val) == true_val)
+            rows.append({
+                "Model": model_id,
+                "Criterion": criterion,
+                "Correct": match
+            })
 
     df = pd.DataFrame(rows)
 
-    # Group by model and criterion, compute mean accuracy
     accuracy_df = (
         df.groupby(["Model", "Criterion"])["Correct"]
         .mean()
@@ -562,7 +580,6 @@ def compute_truth_table(parsed_json, patient_df):
     )
 
     return accuracy_df
-
 
 
 # %%
@@ -844,31 +861,6 @@ def plot_criteria_accuracy_pie(parsed_json, patient_df):
 #     return perc_score
 
 
-
-def print_troubleshooting_outputs(wrong_outputs, invalid_outputs):
-    """
-    Prints wrong and invalid LLM outputs with expected and predicted values, and full replies.
-    
-    Args:
-        wrong_outputs (list): List of dicts with keys 'expected', 'predicted', 'reply'.
-        invalid_outputs (list): List of dicts with at least a 'reply' key.
-    """
-    # Print wrong outputs
-    for i, entry in enumerate(wrong_outputs):
-        print(f"\n--- Wrong Reply {i+1} ---")
-        print(f"Expected: {entry.get('expected')} | Predicted: {entry.get('predicted')}")
-        print(f"Reply:\n{entry.get('reply')}")
-
-    # Print invalid outputs with metadata
-    for i, entry in enumerate(invalid_outputs):
-        print(f"\n--- Invalid Reply {i+1} ---")
-        print(f"Expected: {entry.get('expected', 'N/A')} | Predicted: {entry.get('predicted', 'N/A')}")
-        print(f"Reply:\n{entry.get('reply')}")
-
-    # Extract and print replies only
-    invalid_replies = [entry['reply'] for entry in invalid_outputs if 'reply' in entry]
-    for i, reply in enumerate(invalid_replies):
-        print(f"\n--- Invalid Reply (Only) {i+1} ---\n{reply}")
 
 
 
