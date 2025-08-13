@@ -42,6 +42,8 @@ def perc_score(
     Calculate the PERC rule score.
     Returns the number of failed criteria (0 = all passed, 8 = all failed).
     """
+    if age is None or heart_rate is None or oxygen_saturation is None:
+        return None  # Signal that calculation can't be done
     score = 0
     if age >= 50:
         score += 1
@@ -58,7 +60,6 @@ def perc_score(
     if unilateral_leg_swelling:
         score += 1
     if recent_trauma_or_surgery:
-        
         score += 1
     return score
 
@@ -1120,3 +1121,47 @@ def plot_corrected_json_verification_pie(results_df):
     plt.suptitle("Prediction vs Second-Pass Verification per Model", fontsize=16)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.show()
+
+
+
+
+
+def add_calc_param_to_results(results_df):
+
+    # Make a copy to avoid mutating original df
+    df = results_df.copy()
+
+    def safe_extract_json(reply):
+        try:
+            return extract_json_from_text(reply)
+        except Exception:
+            return None
+
+    df["calc_param"] = df["reply"].apply(safe_extract_json)
+
+    return df
+
+def add_calculated_score(results_df):
+    df = results_df.copy()
+
+    def compute_score(params):
+        if not isinstance(params, dict):
+            return None
+        try:
+            return perc_score(
+                params.get("age"),
+                params.get("heart_rate"),
+                params.get("oxygen_saturation"),
+                params.get("has_hemoptysis", False),
+                params.get("on_estrogen", False),
+                params.get("history_dvt_pe", False),
+                params.get("unilateral_leg_swelling", False),
+                params.get("recent_trauma_or_surgery", False)
+            )
+        except Exception:
+            return None
+
+    df["calculated_score"] = int(df["calc_param"].apply(compute_score))
+    return df
+
+
