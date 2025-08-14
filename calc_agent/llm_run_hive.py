@@ -115,7 +115,7 @@ async def run_models_with_output(
         for idx, row in iterate_df.iterrows():
             prompt_result = results_async[idx]
             reply = prompt_result["result"]
-            entities = ast.literal_eval(row["Relevant Entities"]) if include_relevant_entities else None
+            entities = ast.literal_eval(row["Relevant Entities"]) if include_relevant_entities else ""
             ground_truth = row["Ground Truth Answer"]
 
             parsed = extract_json_from_text(reply)
@@ -124,6 +124,8 @@ async def run_models_with_output(
             predicted_score = None
             valid = False
             correct_flag = False
+
+            rel_entities = ast.literal_eval(row["Relevant Entities"]) 
 
             if parsed is not None and "Answer" in parsed:
                 try:
@@ -146,7 +148,7 @@ async def run_models_with_output(
             results_data.append({
                 "model_id": model_id,
                 "note": row["Patient Note"],
-                "entities": entities,
+                "entities": rel_entities ,
                 "ground_truth": ground_truth,
                 "predicted": predicted_score,
                 "parsed_criteria": criteria,
