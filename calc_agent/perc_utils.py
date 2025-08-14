@@ -150,352 +150,6 @@ def extract_score_from_text(text):
     return {"Answer": None, "Note": "No identifiable score"}
 
 
-def compute_truth_table(results_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compare predicted PERC criteria to ground truth derived from parsed patient entities.
-    Returns a DataFrame showing criterion-level accuracy per model.
-    """
-    def to_bool(val):
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, str):
-            return val.strip().lower() in ['true', 'yes', '1']
-        return bool(val)
-
-    rows = []
-
-    for _, row in results_df.iterrows():
-        model_id = row["model_id"]
-        criteria_pred = None
-
-        try:
-            criteria_pred = row["parsed_criteria"]["Criteria"]
-        except (TypeError, KeyError):
-            continue  # skip invalid rows
-
-        entities = row["entities"]
-
-        # Extract numbers safely
-        age = extract_number(entities.get("age"))
-        hr = extract_number(entities.get("Heart Rate or Pulse"))
-        o2 = extract_number(entities.get("O₂ saturation percentage"))
-
-        # Construct truth based on entities
-        truth = {
-            "Age < 50": age is not None and age < 50,
-            "HR < 100": hr is not None and hr < 100,
-            "O₂ ≥ 95%": o2 is not None and o2 >= 95,
-            "No hemoptysis": not to_bool(entities.get("Hemoptysis", False)),
-            "No Hormone use": not to_bool(entities.get("Hormone use", False)),
-            "No prior VTE or DVT": not (
-                to_bool(entities.get("Previously documented Deep Vein Thrombosis", False)) or
-                to_bool(entities.get("Previously Documented Pulmonary Embolism", False))
-            ),
-            "No unilateral leg swelling": not to_bool(entities.get("Unilateral Leg Swelling", False)),
-            "No recent trauma or surgery": not to_bool(entities.get("Recent surgery or trauma", False)),
-        }
-
-        for criterion, true_val in truth.items():
-            pred_val = criteria_pred.get(criterion)
-            if pred_val is None:
-                continue  # Missing prediction
-            match = (to_bool(pred_val) == true_val)
-            rows.append({
-                "Model": model_id,
-                "Criterion": criterion,
-                "Correct": match
-            })
-
-    df = pd.DataFrame(rows)
-
-    accuracy_df = (
-        df.groupby(["Model", "Criterion"])["Correct"]
-        .mean()
-        .reset_index()
-        .pivot(index="Criterion", columns="Model", values="Correct")
-        .round(3)
-    )
-
-    return accuracy_df
-
-
-# %%
-'''A function that plots confusion matrices for each model and criterion based on parsed JSON outputs and patient data.
-It creates a grid of subplots with each model's confusion matrix for each criterion.'''
-def plot_confusion_matrices_by_model(parsed_json, patient_df):
-    def to_bool(val):
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, str):
-            return val.lower() in ['true', 'yes', '1']
-        return bool(val)
-
-    data = []
-
-    for model_id, outputs in parsed_json.items():
-        for i, output in enumerate(outputs):
-            try:
-                criteria_pred = output["parsed_criteria"]["Criteria"]
-            except (TypeError, KeyError):
-                continue
-
-            row = patient_df.iloc[i]
-            entities = ast.literal_eval(row["Relevant Entities"])
-
-            age = extract_number(entities.get("age"))
-            hr = extract_number(entities.get("Heart Rate or Pulse"))
-            o2 = extract_number(entities.get("O₂ saturation percentage"))
-
-            truth = {
-                "Age < 50": age is not None and age < 50,
-                "HR < 100": hr is not None and hr < 100,
-                "O₂ ≥ 95%": o2 is not None and o2 >= 95,
-                "No hemoptysis": not to_bool(entities.get("Hemoptysis", False)),
-                "No estrogen use": not to_bool(entities.get("Estrogen use", False)),
-                "No prior VTE": not to_bool(entities.get("Prior VTE", False)),
-                "No unilateral leg swelling": not to_bool(entities.get("Unilateral leg swelling", False)),
-            }
-
-            for criterion, true_val in truth.items():
-                pred_val = criteria_pred.get(criterion)
-                if pred_val is None:
-                    continue
-                data.append({
-                    "Model": model_id,
-                    "Criterion": criterion,
-                    "True": true_val,
-                    "Pred": pred_val,
-                })
-
-    df = pd.DataFrame(data)
-
-    models = df["Model"].unique()
-    criteria = df["Criterion"].unique()
-
-    nrows = len(models)
-    ncols = len(criteria)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows), squeeze=False)
-
-    for i, model in enumerate(models):
-        for j, criterion in enumerate(criteria):
-            ax = axes[i][j]
-            sub = df[(df["Model"] == model) & (df["Criterion"] == criterion)]
-            cm = pd.crosstab(sub["True"], sub["Pred"])
-            sns.heatmap(cm, annot=True, fmt="d", cbar=False, cmap="Blues", ax=ax)
-            ax.set_title(f"{model} — {criterion}")
-            ax.set_xlabel("Predicted")
-            ax.set_ylabel("Actual")
-
-    plt.tight_layout()
-    plt.show()
-
-
-''' A function that plots the accuracy of PERC criteria by outcome (correct or incorrect) for each model.
-It creates a heatmap for each outcome type, showing the accuracy of each criterion per model.'''
-def plot_criteria_accuracy_by_outcome(results_df: pd.DataFrame):
-    def to_bool(val):
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, str):
-            return val.strip().lower() in ['true', 'yes', '1']
-        return bool(val)
-
-    def compute_accuracy_df(filter_correct=None):
-        rows = []
-
-        for _, row in results_df.iterrows():
-            model_id = row["model_id"]
-            is_correct = row.get("correct", None)
-
-            # Filter based on correctness if specified
-            if filter_correct is not None and is_correct != filter_correct:
-                continue
-
-            try:
-                criteria_pred = row["parsed_criteria"]["Criteria"]
-            except (TypeError, KeyError):
-                continue  # skip invalid rows
-
-            entities = row["entities"]
-
-            # Extract numbers safely
-            age = extract_number(entities.get("age"))
-            hr = extract_number(entities.get("Heart Rate or Pulse"))
-            o2 = extract_number(entities.get("O₂ saturation percentage"))
-
-            # Construct truth
-            truth = {
-                "Age < 50": age is not None and age < 50,
-                "HR < 100": hr is not None and hr < 100,
-                "O₂ ≥ 95%": o2 is not None and o2 >= 95,
-                "No hemoptysis": not to_bool(entities.get("Hemoptysis", False)),
-                "No Hormone use": not to_bool(entities.get("Hormone use", False)),
-                "No prior VTE or DVT": not (
-                    to_bool(entities.get("Previously documented Deep Vein Thrombosis", False)) or
-                    to_bool(entities.get("Previously Documented Pulmonary Embolism", False))
-                ),
-                "No unilateral leg swelling": not to_bool(entities.get("Unilateral Leg Swelling", False)),
-                "No recent trauma or surgery": not to_bool(entities.get("Recent surgery or trauma", False)),
-            }
-
-            for criterion, true_val in truth.items():
-                pred_val = criteria_pred.get(criterion)
-                if pred_val is None:
-                    continue  # Missing prediction
-                match = (to_bool(pred_val) == true_val)
-                rows.append({
-                    "Model": model_id,
-                    "Criterion": criterion,
-                    "Correct": match
-                })
-
-        df = pd.DataFrame(rows)
-
-        summary = (
-            df.groupby(["Model", "Criterion"])["Correct"]
-            .mean()
-            .reset_index()
-            .pivot(index="Criterion", columns="Model", values="Correct")
-            .round(3)
-        )
-
-        return summary
-
-    # Compute 3 condition-specific DataFrames
-    correct_df = compute_accuracy_df(filter_correct=True)
-    incorrect_df = compute_accuracy_df(filter_correct=False)
-    all_df = compute_accuracy_df(filter_correct=None)
-
-    fig, axes = plt.subplots(1, 3, figsize=(24, 6), sharey=True)
-
-    for df, ax, title in zip(
-        [correct_df, incorrect_df, all_df],
-        axes,
-        ["When Final Answer is Correct", "When Final Answer is Incorrect", "All Predictions"]
-    ):
-        if df.empty:
-            ax.set_visible(False)
-            continue
-
-        sns.heatmap(df, annot=True, fmt=".2f", cmap="Blues", vmin=0, vmax=1, cbar=True, ax=ax)
-        ax.set_title(f"Criterion Accuracy — {title}")
-        ax.set_xlabel("Model")
-        ax.set_ylabel("PERC Criterion")
-
-    plt.tight_layout()
-    plt.show()
-
-'''Takes a parsed_json object (output from each model), Takes a patient_df (with patient notes and entities), Extracts and compares predicted vs actual PERC criteria, 
-And produces pie charts showing how often models: Got all criteria right, Got one or more criteria wrong, Separately for correct and incorrect final predictions.'''
-
-
-def plot_criteria_accuracy_pie(results_df: pd.DataFrame):
-    def to_bool(val):
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, str):
-            return val.strip().lower() in ['true', 'yes', '1']
-        return bool(val)
-
-    # Define the "truth" function based on entities (same as in compute_truth_table)
-    def get_truth(entities):
-        age = extract_number(entities.get("age"))
-        hr = extract_number(entities.get("Heart Rate or Pulse"))
-        o2 = extract_number(entities.get("O₂ saturation percentage"))
-        return {
-            "Age < 50": age is not None and age < 50,
-            "HR < 100": hr is not None and hr < 100,
-            "O₂ ≥ 95%": o2 is not None and o2 >= 95,
-            "No hemoptysis": not to_bool(entities.get("Hemoptysis", False)),
-            "No Hormone use": not to_bool(entities.get("Hormone use", False)),
-            "No prior VTE or DVT": not (
-                to_bool(entities.get("Previously documented Deep Vein Thrombosis", False)) or
-                to_bool(entities.get("Previously Documented Pulmonary Embolism", False))
-            ),
-            "No unilateral leg swelling": not to_bool(entities.get("Unilateral Leg Swelling", False)),
-            "No recent trauma or surgery": not to_bool(entities.get("Recent surgery or trauma", False)),
-        }
-
-    # Aggregate stats per model and correctness group
-    model_stats = {}
-
-    for model_id in results_df["model_id"].unique():
-        df_model = results_df[results_df["model_id"] == model_id]
-        correct_all = 0
-        correct_some = 0
-        wrong_all = 0
-        wrong_some = 0
-
-        for _, row in df_model.iterrows():
-            try:
-                criteria_pred = row["parsed_criteria"]["Criteria"]
-            except (TypeError, KeyError):
-                continue
-
-            truth = get_truth(row["entities"])
-            match_flags = []
-
-            for criterion, true_val in truth.items():
-                pred_val = criteria_pred.get(criterion)
-                if pred_val is None:
-                    continue
-                match_flags.append(to_bool(pred_val) == true_val)
-
-            if not match_flags:
-                continue  # No criteria matched
-
-            if all(match_flags):
-                if row.get("correct", False):
-                    correct_all += 1
-                else:
-                    wrong_all += 1
-            else:
-                if row.get("correct", False):
-                    correct_some += 1
-                else:
-                    wrong_some += 1
-
-        model_stats[model_id] = {
-            "correct": {
-                "All Criteria Correct": correct_all,
-                "One or More Incorrect": correct_some
-            },
-            "incorrect": {
-                "All Criteria Correct": wrong_all,
-                "One or More Incorrect": wrong_some
-            }
-        }
-
-    # Plot pie charts
-    num_models = len(model_stats)
-    fig, axes = plt.subplots(2, num_models, figsize=(6 * num_models, 12))
-
-    if num_models == 1:
-        axes = axes.reshape(2, 1)
-
-    for col, (model_id, counts) in enumerate(model_stats.items()):
-        for row_idx, key in enumerate(["correct", "incorrect"]):
-            subset = counts[key]
-            total = sum(subset.values())
-            ax = axes[row_idx][col]
-
-            if total == 0:
-                ax.set_title(f"{model_id}\n(No {key} answers)")
-                ax.axis("off")
-                continue
-
-            sizes = [subset["All Criteria Correct"], subset["One or More Incorrect"]]
-            labels = ["All Criteria Correct", "One or More Incorrect"]
-            colors = ["mediumseagreen", "tomato"]
-
-            ax.pie(sizes, labels=labels, autopct="%1.1f%%", colors=colors, startangle=140)
-            ax.set_title(f"{model_id} - {key.capitalize()}")
-
-    plt.suptitle("Criteria Accuracy Breakdown per Model", fontsize=18)
-    plt.tight_layout()
-    plt.show()
-
-
 
 # def llm(text:str) -> str:
 #     pass
@@ -515,227 +169,6 @@ def plot_criteria_accuracy_pie(results_df: pd.DataFrame):
 
 #     explanation = llm(f"{perc_score}")
 #     return perc_score
-
-
-
-# %%
-def print_correct_with_wrong_criteria(parsed_json, patient_df):
-    def to_bool(val):
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, str):
-            return val.lower() in ['true', 'yes', '1']
-        return bool(val)
-
-    def get_truth(entities):
-        age = extract_number(entities.get("age"))
-        hr = extract_number(entities.get("Heart Rate or Pulse"))
-        o2 = extract_number(entities.get("O₂ saturation percentage"))
-        return {
-            "Age < 50": age is not None and age < 50,
-            "HR < 100": hr is not None and hr < 100,
-            "O₂ ≥ 95%": o2 is not None and o2 >= 95,
-            "No hemoptysis": not to_bool(entities.get("Hemoptysis", False)),
-            "No estrogen use": not to_bool(entities.get("Estrogen use", False)),
-            "No prior VTE": not to_bool(entities.get("Prior VTE", False)),
-            "No unilateral leg swelling": not to_bool(entities.get("Unilateral leg swelling", False)),
-        }
-
-    count = 0
-
-    for model_id, outputs in parsed_json.items():
-        for i, output in enumerate(outputs):
-            if not output.get("correct"):
-                continue  # Only focus on correct predictions
-
-            try:
-                criteria_pred = output["parsed_criteria"]["Criteria"]
-            except (TypeError, KeyError):
-                continue
-
-            row = patient_df.iloc[i]
-            entities = ast.literal_eval(row["Relevant Entities"])
-            truth = get_truth(entities)
-
-            wrong_criteria = []
-            for criterion, true_val in truth.items():
-                pred_val = criteria_pred.get(criterion)
-                if pred_val is None:
-                    continue
-                if pred_val != true_val:
-                    wrong_criteria.append(criterion)
-
-            if wrong_criteria:
-                count += 1
-                print(f"\n--- Correct Answer with Wrong Criteria {count} ---")
-                print(f"Model: {model_id}")
-                print(f"Wrong Criteria: {wrong_criteria}")
-                print(f"Expected (Ground Truth): {output.get('ground_truth')} | Predicted: {output.get('predicted')}")
-                print(f"\nParsed Entities:\n{entities}")
-                print(f"\nPatient Note:\n{row.get('Patient Note', 'N/A')}")
-                print(f"\nReply:\n{output.get('raw_reply', 'N/A')}")
-
-    if count == 0:
-        print("✅ No correct predictions with incorrect criteria.")
-
-
-async def validate_model_outputs_with_json(
-    sys_instruct: str,
-    results_df: pd.DataFrame,
-    temperature=0.0,
-    max_tokens=500
-):
-    """
-    Rerun validation prompts grouped by model_id from the results_df.
-    Each model gets its own batch call with its respective prompts.
-    Returns results_df with 'corrected_reply' and 'corrected_json' columns.
-    """
-    # Group prompts and tracking indices by model
-    prompts_by_model = defaultdict(list)
-    indices_by_model = defaultdict(list)
-
-    for idx, row in results_df.iterrows():
-        model_id = row["model_id"]
-        if not row["valid"]:
-            prompts_by_model[model_id].append("Skip: original output was invalid.")
-        else:
-            prompt = (
-                "You are reviewing a previously generated PERC score JSON output and explanation.\n"
-                "Your task is to check if the explanation, criteria, and final score are consistent.\n"
-                "If anything is wrong, correct it. Otherwise, return the same JSON unchanged.\n"
-                "Return only a single corrected JSON object, nothing else.\n\n"
-                
-                f"Original Reply:\n{row['reply']}"
-            )
-            prompts_by_model[model_id].append(prompt)
-
-        indices_by_model[model_id].append(idx)
-
-    # Initialize output containers
-    corrected_replies = [None] * len(results_df)
-    corrected_jsons = [None] * len(results_df)
-
-    # Run validation per model_id
-    for model_id, prompts in prompts_by_model.items():
-        batch_results = await run_batch(
-            model=model_id,
-            system_instruction=sys_instruct,
-            prompts=prompts,
-            temperature=temperature,
-            max_token=max_tokens
-        )
-
-        indices = indices_by_model[model_id]
-        for i, res in enumerate(batch_results):
-            idx = indices[i]
-            raw_reply = res.get("result")
-            corrected_replies[idx] = raw_reply
-            corrected_jsons[idx] = extract_json_from_text(raw_reply)  # will still handle None/invalid cases
-
-    # Add results back into a new dataframe
-    results_df = results_df.copy()
-    results_df["corrected_reply"] = corrected_replies
-    results_df["corrected_json"] = corrected_jsons
-
-    return results_df
-
-def plot_corrected_json_verification_pie(results_df):
-    """
-    For each model, plots two pie charts:
-    - One showing the original prediction outcome (correct/wrong/invalid)
-    - One showing second-pass LLM verification outcome
-
-    Uses 'predicted', 'ground_truth', and 'corrected_json' columns from results_df.
-    """
-
-    model_ids = results_df["model_id"].unique()
-    n_models = len(model_ids)
-
-    # Create 2 rows per model: one for original, one for second-pass
-    ncols = 2
-    nrows = n_models * 2
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 5 * n_models))
-    axes = axes.flatten()
-
-    for model_index, model_id in enumerate(model_ids):
-        model_df = results_df[results_df["model_id"] == model_id]
-
-        # --- Original Prediction Evaluation ---
-        correct = 0
-        wrong = 0
-        invalid = 0
-
-        for _, row in model_df.iterrows():
-            predicted = row.get("predicted")
-            ground_truth = row.get("ground_truth")
-
-            if predicted is None:
-                invalid += 1
-                continue
-
-            try:
-                if int(predicted) == int(ground_truth):
-                    correct += 1
-                else:
-                    wrong += 1
-            except Exception:
-                invalid += 1
-
-        values_orig = [correct, wrong, invalid]
-        labels = ["Correct", "Wrong", "Invalid"]
-        colors = ["mediumseagreen", "tomato", "slategray"]
-
-        if sum(values_orig) > 0:
-            ax_orig = axes[model_index * 2]
-            ax_orig.pie(values_orig, labels=labels, autopct="%1.1f%%",
-                        colors=colors, startangle=140)
-            ax_orig.set_title(f"Model: {model_id} (Original Prediction)")
-
-        # --- Second-Pass Verification Evaluation ---
-        correct = 0
-        wrong = 0
-        invalid = 0
-
-        for _, row in model_df.iterrows():
-            predicted = row["predicted"]
-            corrected_json = row.get("corrected_json")
-
-            if not corrected_json or not isinstance(corrected_json, dict):
-                invalid += 1
-                continue
-
-            verified_answer = corrected_json.get("Answer")
-
-            try:
-                verified_answer = int(float(verified_answer))
-            except Exception:
-                invalid += 1
-                continue
-
-            if verified_answer == predicted:
-                correct += 1
-            else:
-                wrong += 1
-
-        values_corr = [correct, wrong, invalid]
-        labels_corr = ["Verified Correct", "Verified Wrong", "Invalid / Missing"]
-
-        if sum(values_corr) > 0:
-            ax_corr = axes[model_index * 2 + 1]
-            ax_corr.pie(values_corr, labels=labels_corr, autopct="%1.1f%%",
-                        colors=colors, startangle=140)
-            ax_corr.set_title(f"Model: {model_id} (Second-Pass Verification)")
-
-    # Hide any unused subplots
-    for j in range(n_models * 2, len(axes)):
-        axes[j].axis("off")
-
-    plt.suptitle("Prediction vs Second-Pass Verification per Model", fontsize=16)
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.show()
-
-
 
 
 
@@ -1014,7 +447,7 @@ def verify_calc_json(obj: Any) -> Dict[str, Any]:
         return {"ok": False, "reason": repr(e)}
 
 
-def compute_and_plot_perc_results(results_df: pd.DataFrame) -> pd.DataFrame:
+def compute_perc_results(results_df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute accuracy using programmatically recomputed PERC scores and plot pies.
 
@@ -1092,6 +525,26 @@ def compute_and_plot_perc_results(results_df: pd.DataFrame) -> pd.DataFrame:
 
     summary = pd.concat([overall_row, per_model], ignore_index=True)
 
+
+    return summary
+
+def plot_pie_computed_results(summary_df: pd.DataFrame):
+    # Build summary (per-model + overall)
+    def counts_for(group: pd.DataFrame) -> Dict[str, int]:
+        c = group["status_recomputed"].value_counts()
+        correct = int(c.get("Correct", 0))
+        incorrect = int(c.get("Incorrect", 0))
+        invalid = int(c.get("Invalid", 0))
+        total = correct + incorrect + invalid
+        return {"Correct": correct, "Incorrect": incorrect, "Invalid": invalid, "Total": total}
+    overall = counts_for(summary_df)
+    per_model = (
+        summary_df.groupby("model_id", dropna=False)
+          .apply(counts_for)
+          .apply(pd.Series)
+          .reset_index()
+          .rename(columns={"index": "model_id"})
+    )
     # ----- Plotting -----
     # Colors (keep consistent)
     colors = ["mediumseagreen", "tomato", "slategray"]
@@ -1125,8 +578,6 @@ def compute_and_plot_perc_results(results_df: pd.DataFrame) -> pd.DataFrame:
             ax.set_title(f"Model: {row['model_id']} (Recomputed vs Ground Truth)")
         plt.tight_layout()
         plt.show()
-
-    return summary
 
 async def second_pass_fix_and_plot_per_model(
     results_df: pd.DataFrame,
@@ -1390,3 +841,8 @@ def plot_criteria_accuracy_by_outcome(results_df: pd.DataFrame):
     plt.show()
 
     return acc_pivot
+
+#V0 patient note calculator simple prompt
+#V1 advanced prompt with criteria and score
+#V2 Only extract criteria and score and calculate score
+#V3 Validate criteria and score
