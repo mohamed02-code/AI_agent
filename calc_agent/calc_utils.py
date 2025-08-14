@@ -83,29 +83,6 @@ def extract_json_from_text(text: str):
     return obj 
 
 
-'''Plots a bar chart comparing the counts of correct, wrong, and invalid answers for each model.'''
-def plot_df(results_df):
-    x = np.arange(len(results_df))  # label locations
-    width = 0.25  # narrower bar width to fit 3 bars per group
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    bars1 = ax.bar(x - width,     results_df["correct"], width, label='Correct', color='mediumseagreen')
-    bars2 = ax.bar(x,             results_df["wrong"],   width, label='Wrong',   color='tomato')
-    bars3 = ax.bar(x + width,     results_df["invalid"], width, label='Invalid', color='slategray')
-
-    ax.set_title("Correct, Wrong, and Invalid Answer Count per Model")
-    ax.set_xlabel("Model")
-    ax.set_ylabel("Count")
-    ax.set_xticks(x)
-    ax.set_xticklabels(results_df["model_id"], rotation=45, ha="right")
-    ax.legend()
-    ax.grid(axis="y", linestyle='--', alpha=0.5)
-
-    plt.tight_layout()
-    plt.show()
-
-
 '''Plots a pie chart for each model showing the distribution of correct, wrong, and invalid answers.'''
 def plot_df_pie(results_df):
     # Get unique models
