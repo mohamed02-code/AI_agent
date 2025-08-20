@@ -127,23 +127,25 @@ async def run_models_with_output(
 
             rel_entities = ast.literal_eval(row["Relevant Entities"]) 
 
-            if parsed is not None and "Answer" in parsed:
-                try:
-                    parsed["Answer"] = int(float(parsed["Answer"]))
-                except Exception as e:
-                    print(f"Failed to convert Answer to int: {parsed['Answer']}, error: {e}")
-                    parsed["Answer"] = None
+            if parsed is not None:
+                criteria = {k: v for k, v in parsed.items() if k != "Answer"}
+                if "Answer" in parsed:
+                    try:
+                        parsed["Answer"] = float(parsed["Answer"])
+                    except Exception as e:
+                        print(f"Failed to convert Answer to int: {parsed['Answer']}, error: {e}")
+                        parsed["Answer"] = None
 
-                answer = parsed.get("Answer")
-                if answer is not None:
-                    predicted_score = answer
-                    criteria = {k: v for k, v in parsed.items() if k != "Answer"}
-                    valid = True
-                    if predicted_score == int(ground_truth):
-                        entry_type = "correct"
-                        correct_flag = True
-                    else:
-                        entry_type = "wrong"
+                    answer = parsed.get("Answer")
+                    if answer is not None:
+                        predicted_score = answer
+                        
+                        valid = True
+                        if predicted_score == float(ground_truth):
+                            entry_type = "correct"
+                            correct_flag = True
+                        else:
+                            entry_type = "wrong"
 
             results_data.append({
                 "model_id": model_id,
@@ -206,8 +208,3 @@ def print_troubleshooting_outputs(results_df):
         print(f"Entities:\n{row['entities']}")
         print(f"Prompt:\n{row['prompt']}")
         print(f"Reply:\n{row['reply']}")
-
-    # Just raw replies from invalid if needed
-    invalid_replies = invalid_df['reply'].tolist()
-    for i, reply in enumerate(invalid_replies):
-        print(f"\n--- Invalid Reply (Raw Only) {i + 1} ---\n{reply}")
