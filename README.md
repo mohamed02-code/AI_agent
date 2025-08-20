@@ -51,7 +51,7 @@ print(results_df.head())
 
 ## Supported Calculators
 
-* **PERC or PERC Rule for Pulmonary Embolism ** (`perc`, `perc rule`)  
+* **PERC or PERC Rule for Pulmonary Embolism** (`perc`, `perc rule`)  
 * **Wells or Wells' Criteria for Pulmonary Embolism** (`wells`, `wells score`)
 
 
