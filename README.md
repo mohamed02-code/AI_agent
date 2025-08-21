@@ -73,3 +73,9 @@ results_df[results_df["model_id"] == "Llama-3.3-70B-Instruct"]
 * `prompt_mode="enhanced_prompt"`: Run full LLM evaluation with scoring logic embedded in prompt.
 
 
+## TODO
+
+* Use jinja for prompts
+* Use Huggingface API 
+
+
