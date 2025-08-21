@@ -1,0 +1,9 @@
+pandas
+datasets
+matplotlib
+requests
+regex
+numpy
+aiohttp
+seaborn
+jinja2
