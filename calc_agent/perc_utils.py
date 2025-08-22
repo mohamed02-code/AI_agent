@@ -580,7 +580,7 @@ def plot_pie_computed_results(summary_df: pd.DataFrame):
         plt.show()
 
 
-def plot_criteria_accuracy_by_outcome(results_df: pd.DataFrame):
+def plot_criteria_accuracy_heatmap(results_df: pd.DataFrame):
     """
     Plot criterion-level accuracy per model (ignores final-answer correctness).
 
@@ -704,7 +704,8 @@ def plot_criteria_accuracy_by_outcome(results_df: pd.DataFrame):
     acc_pivot = acc_pivot.loc[existing_rows]
 
     # Plot
-    plt.figure(figsize=(1.8 * max(6, len(acc_pivot.columns)), 2.0 * len(acc_pivot.index)))
+    # plt.figure(figsize=(1.8 * max(6, len(acc_pivot.columns)), 2.0 * len(acc_pivot.index)))
+    plt.figure(figsize=(12, 4))
     sns.heatmap(
         acc_pivot.round(3),
         annot=True,
@@ -721,8 +722,128 @@ def plot_criteria_accuracy_by_outcome(results_df: pd.DataFrame):
     plt.show()
 
     return acc_pivot
+def plot_criteria_accuracy_by_outcome(results_df: pd.DataFrame):
+    """
+    Plot criterion-level accuracy per model, separately for all, correct, and wrong final answers.
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
 
-#V0 patient note calculator simple prompt
-#V1 advanced prompt with criteria and score
-#V2 Only extract criteria and score and calculate score
-#V3 Validate criteria and score
+    CRITERIA_ORDER = [
+        "Age < 50",
+        "HR < 100",
+        "O₂ ≥ 95%",
+        "No hemoptysis",
+        "No Hormone use",
+        "No prior VTE or DVT",
+        "No unilateral leg swelling",
+        "No recent trauma or surgery",
+    ]
+
+    def to_bool(val):
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return bool(val)
+        if isinstance(val, str):
+            return val.strip().lower() in {"true", "yes", "1", "present", "y"}
+        return False
+
+    def truth_flags_from_entities(entities: dict) -> dict:
+        e = normalize_entities(entities or {})
+        age = e.get("age")
+        hr = e.get("heart_rate")
+        o2 = e.get("o2_saturation")
+        return {
+            "Age < 50": (age is not None and age < 50),
+            "HR < 100": (hr is not None and hr < 100),
+            "O₂ ≥ 95%": (o2 is not None and o2 >= 95),
+            "No hemoptysis": (not e.get("has_hemoptysis", False)),
+            "No Hormone use": (not e.get("on_estrogen", False)),
+            "No prior VTE or DVT": (not e.get("history_dvt_pe", False)),
+            "No unilateral leg swelling": (not e.get("unilateral_leg_swelling", False)),
+            "No recent trauma or surgery": (not e.get("recent_trauma_or_surgery", False)),
+        }
+
+    # Helper to create comparison DataFrame
+    def build_comparison_df(df_subset):
+        rows = []
+        for _, row in df_subset.iterrows():
+            model_id = row.get("model_id")
+            pc = row.get("parsed_criteria")
+            try:
+                criteria_pred = pc.get("Criteria") if isinstance(pc, dict) else None
+            except Exception:
+                criteria_pred = None
+            if not isinstance(criteria_pred, dict):
+                continue
+            truth = truth_flags_from_entities(row.get("entities", {}))
+            for crit in CRITERIA_ORDER:
+                true_val = truth.get(crit)
+                pred_val = criteria_pred.get(crit)
+                if true_val is None or pred_val is None:
+                    continue
+                rows.append({"Model": model_id, "Criterion": crit, "Correct": (to_bool(pred_val) == bool(true_val))})
+        return pd.DataFrame(rows)
+
+    # Split by all / correct / wrong
+    subsets = {
+        "All": results_df,
+        "Correct Final Answer": results_df[results_df.get("correct") == True],
+        "Wrong Final Answer": results_df[results_df.get("correct") == False],
+    }
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
+
+    for ax, (title, subset_df) in zip(axes, subsets.items()):
+        comp_df = build_comparison_df(subset_df)
+        if comp_df.empty:
+            ax.text(0.5, 0.5, "No data", ha='center', va='center')
+            ax.set_title(title)
+            continue
+        acc = comp_df.groupby(["Criterion", "Model"])["Correct"].mean().reset_index()
+        acc_pivot = acc.pivot(index="Criterion", columns="Model", values="Correct")
+        existing_rows = [c for c in CRITERIA_ORDER if c in acc_pivot.index]
+        acc_pivot = acc_pivot.loc[existing_rows]
+        sns.heatmap(
+            acc_pivot.round(3),
+            annot=True,
+            fmt=".2f",
+            cmap="Blues",
+            vmin=0.0,
+            vmax=1.0,
+            cbar=(ax==axes[2]),  # show colorbar only on the last heatmap
+            ax=ax
+        )
+        ax.set_title(title)
+        ax.set_xlabel("Model")
+        ax.set_ylabel("PERC Criterion")
+
+    plt.show()
+
+def plot_predicted_distribution(df, model_id):
+    """
+    Plots a distribution graph (histogram + KDE) of predicted scores for a given model_id.
+    
+    Parameters:
+        df (pd.DataFrame): DataFrame containing results_data.
+        model_id (str): The model_id to filter on.
+    """
+    # filter df by model_id
+    model_df = df[df["model_id"] == model_id]
+    
+    if model_df.empty:
+        print(f"No data found for model_id = {model_id}")
+        return
+    
+    plt.figure(figsize=(8, 5))
+    
+    sns.histplot(model_df["predicted"], kde=True, bins=20, color="skyblue", edgecolor="black")
+    
+    plt.title(f"Distribution of Predicted Scores for {model_id}", fontsize=14)
+    plt.xlabel("Predicted Score")
+    plt.ylabel("Frequency")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    
+    plt.show()
+

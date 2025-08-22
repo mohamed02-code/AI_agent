@@ -53,4 +53,4 @@ class WELLS:
         else:
             interp = "Low probability of PE"
 
-        return CalcResult(name=self.name, score=total_score, criteria=crit, interpretation=interp)
+        return CalcResult(name=self.name, score=to_float(total_score), criteria=crit, interpretation=interp)

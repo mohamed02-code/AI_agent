@@ -133,7 +133,7 @@ async def run_models_with_output(
                     try:
                         parsed["Answer"] = float(parsed["Answer"])
                     except Exception as e:
-                        print(f"Failed to convert Answer to int: {parsed['Answer']}, error: {e}")
+                        # print(f"Failed to convert Answer to int: {parsed['Answer']}, error: {e}")
                         parsed["Answer"] = None
 
                     answer = parsed.get("Answer")
@@ -141,11 +141,20 @@ async def run_models_with_output(
                         predicted_score = answer
                         
                         valid = True
-                        if predicted_score == float(ground_truth):
-                            entry_type = "correct"
-                            correct_flag = True
+                        if row["Output Type"]=="integer":
+                            if predicted_score == float(ground_truth):
+                                entry_type = "correct"
+                                correct_flag = True
+                            else:
+                                entry_type = "wrong"
                         else:
-                            entry_type = "wrong"
+                            upper_limit = row["Upper Limit"]
+                            lower_limit = row["Lower Limit"]
+                            if float(lower_limit)<= predicted_score <= float(upper_limit):
+                                entry_type = "correct"
+                                correct_flag = True
+                            else:
+                                entry_type = "wrong"
 
             results_data.append({
                 "model_id": model_id,
